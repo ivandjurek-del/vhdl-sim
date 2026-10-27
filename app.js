@@ -550,39 +550,54 @@ const App = (() => {
     `).join('');
   }
 
+  function loadComponentIntoEditor(code, name, tbCode) {
+    const tb = tbCode || VHDLInterpreter.generateTestbench(code);
+    if (!currentProject) {
+      currentProject = {
+        id: Date.now().toString(),
+        name,
+        vhdl: code,
+        testbench: tb,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      const projects = getProjects();
+      projects.unshift(currentProject);
+      saveProjects(projects);
+    }
+    closeModals();
+    vhdlEditor.setValue(code);
+    tbEditor.setValue(tb);
+    document.getElementById('project-name-display').textContent = currentProject.name;
+    markSaved();
+    showScreen('editor-screen');
+    toast(`Učitan: ${name}`);
+  }
+
   function insertBuiltinComponent(name) {
     const comp = VHDLLibrary.getAllBuiltin().find(c => c.name === name);
     if (!comp) return;
-    closeModals();
-    vhdlEditor.setValue(comp.code);
-    tbEditor.setValue(VHDLInterpreter.generateTestbench(comp.code));
-    toast(`Učitan: ${name}`);
+    loadComponentIntoEditor(comp.code, comp.name, comp.testbench || null);
   }
 
   function insertCustomComponent(name) {
     const comp = VHDLLibrary.getCustomComponents().find(c => c.name === name);
     if (!comp) return;
-    closeModals();
-    vhdlEditor.setValue(comp.code);
-    tbEditor.setValue(VHDLInterpreter.generateTestbench(comp.code));
-    toast(`Učitan: ${name}`);
+    loadComponentIntoEditor(comp.code, comp.name, null);
   }
 
   function insertComponentCode(name, isCustom) {
     if (isCustom) {
       const comp = VHDLLibrary.getCustomComponents().find(c => c.name === name);
       if (comp) {
-        vhdlEditor.setValue(comp.code);
-        tbEditor.setValue(VHDLInterpreter.generateTestbench(comp.code));
+        loadComponentIntoEditor(comp.code, comp.name, null);
       }
     } else {
       const comp = VHDLLibrary.getAllBuiltin().find(c => c.name === name);
       if (comp) {
-        vhdlEditor.setValue(comp.code);
-        tbEditor.setValue(VHDLInterpreter.generateTestbench(comp.code));
+        loadComponentIntoEditor(comp.code, comp.name, comp.testbench || null);
       }
     }
-    toast('Kod učitan u editor');
   }
 
   function deleteCustomComp(name) {
