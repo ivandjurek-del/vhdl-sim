@@ -513,8 +513,8 @@ begin
 
   stim : process
   begin
-    A <= '1'; C <= '1';
-    -- Pocetno stanje: B=1 -> f=1
+    A <= '1';
+    C <= '1';
     B <= '1';
     wait for 30 ns;
     -- Prelaz B: 1→0: hazard (f kratko '0', 5 ns impuls)

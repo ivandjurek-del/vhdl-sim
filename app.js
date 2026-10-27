@@ -552,23 +552,21 @@ const App = (() => {
 
   function loadComponentIntoEditor(code, name, tbCode) {
     const tb = tbCode || VHDLInterpreter.generateTestbench(code);
-    if (!currentProject) {
-      currentProject = {
-        id: Date.now().toString(),
-        name,
-        vhdl: code,
-        testbench: tb,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      const projects = getProjects();
-      projects.unshift(currentProject);
-      saveProjects(projects);
-    }
+    currentProject = {
+      id: Date.now().toString(),
+      name,
+      vhdl: code,
+      testbench: tb,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    const projects = getProjects();
+    projects.unshift(currentProject);
+    saveProjects(projects);
     closeModals();
     vhdlEditor.setValue(code);
     tbEditor.setValue(tb);
-    document.getElementById('project-name-display').textContent = currentProject.name;
+    document.getElementById('project-name-display').textContent = name;
     markSaved();
     showScreen('editor-screen');
     toast(`Učitan: ${name}`);
