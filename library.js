@@ -380,36 +380,69 @@ end architecture rtl;`
     },
     {
       name: 'decoder_2to4',
-      desc: 'Dekoder 2:4',
+      desc: 'Dekoder 2:4 (en, s1, s0 → y3..y0)',
       category: 'Dekoderi',
-      ports: 'en : IN; sel(1:0) : IN; y(3:0) : OUT',
+      ports: 'en, s1, s0 : IN std_logic; y3, y2, y1, y0 : OUT std_logic',
       code: `library ieee;
 use ieee.std_logic_1164.all;
 
 entity decoder_2to4 is
   port (
-    sel : in  std_logic_vector(1 downto 0);
-    en  : in  std_logic;
-    y   : out std_logic_vector(3 downto 0)
+    en : in  std_logic;
+    s1 : in  std_logic;
+    s0 : in  std_logic;
+    y3 : out std_logic;
+    y2 : out std_logic;
+    y1 : out std_logic;
+    y0 : out std_logic
   );
 end entity decoder_2to4;
 
 architecture rtl of decoder_2to4 is
 begin
-  process(sel, en)
+  y0 <= en and (not s1) and (not s0) after 5 ns;
+  y1 <= en and (not s1) and      s0  after 5 ns;
+  y2 <= en and      s1  and (not s0) after 5 ns;
+  y3 <= en and      s1  and      s0  after 5 ns;
+end architecture rtl;`,
+      testbench: `library ieee;
+use ieee.std_logic_1164.all;
+
+entity decoder_2to4_tb is
+end entity decoder_2to4_tb;
+
+architecture sim of decoder_2to4_tb is
+  signal en, s1, s0 : std_logic := '0';
+  signal y3, y2, y1, y0 : std_logic;
+begin
+  uut : entity work.decoder_2to4
+    port map (en => en, s1 => s1, s0 => s0, y3 => y3, y2 => y2, y1 => y1, y0 => y0);
+
+  stim : process
   begin
-    y <= (others => '0');
-    if en = '1' then
-      case sel is
-        when "00" => y <= "0001";
-        when "01" => y <= "0010";
-        when "10" => y <= "0100";
-        when "11" => y <= "1000";
-        when others => y <= (others => '0');
-      end case;
-    end if;
+    en <= '1';
+    -- sel = "00" -> y0 = 1
+    s1 <= '0';
+    s0 <= '0';
+    wait for 30 ns;
+    -- sel = "01" -> y1 = 1
+    s1 <= '0';
+    s0 <= '1';
+    wait for 30 ns;
+    -- sel = "10" -> y2 = 1
+    s1 <= '1';
+    s0 <= '0';
+    wait for 30 ns;
+    -- sel = "11" -> y3 = 1
+    s1 <= '1';
+    s0 <= '1';
+    wait for 30 ns;
+    -- en = 0 -> svi izlazi = 0
+    en <= '0';
+    wait for 30 ns;
+    wait;
   end process;
-end architecture rtl;`
+end architecture sim;`
     },
     {
       name: 'hazard_static0',
