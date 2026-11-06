@@ -371,6 +371,32 @@ const VHDLInterpreter = (() => {
       statements.push({ type: 'process', sensitivity, statements: stmts });
     }
 
+    // Component instantiations: LABEL : COMPONENT_NAME port map ( ... );
+    const keywords = new Set(['process', 'if', 'case', 'for', 'while', 'when', 'generate']);
+    const instRe = /\b(\w+)\s*:\s*(\w+)\s+port\s+map\s*\(/gi;
+    while ((m = instRe.exec(body)) !== null) {
+      const label = m[1].toLowerCase();
+      const compName = m[2].toLowerCase();
+      if (keywords.has(compName)) continue;
+      // Find matching closing paren
+      let depth = 1, ci = m.index + m[0].length;
+      while (ci < body.length && depth > 0) {
+        if (body[ci] === '(') depth++;
+        else if (body[ci] === ')') depth--;
+        ci++;
+      }
+      const portMapStr = body.slice(m.index + m[0].length, ci - 1);
+      // Parse named associations: port => signal
+      const portAssoc = {};
+      portMapStr.split(',').forEach(assoc => {
+        const parts = assoc.trim().match(/(\w+)\s*=>\s*(\w+)/i);
+        if (parts) {
+          portAssoc[parts[1].toLowerCase()] = parts[2].toLowerCase() === 'open' ? null : parts[2].toLowerCase();
+        }
+      });
+      statements.push({ type: 'component_instance', label, compName, portMap: portAssoc });
+    }
+
     return statements;
   }
 
@@ -426,15 +452,28 @@ const VHDLInterpreter = (() => {
 
   // =================== SIMULATOR ===================
   function simulate(code, testbench, duration, resolution) {
-    const parseRes = parse(code);
-    if (parseRes.errors.length > 0) {
-      return { success: false, errors: parseRes.errors, signals: [], timeline: [] };
+    ensureBuiltins();
+
+    // Parse all entity/architecture pairs; last one is the top-level DUT
+    const allEntities = parseMultiple(code);
+    if (allEntities.length === 0) {
+      const parseRes = parse(code);
+      return { success: false, errors: parseRes.errors.length > 0 ? parseRes.errors : [{ message: 'Nije parsiran entity/architecture' }], signals: [], timeline: [] };
     }
 
-    const entity = parseRes.entities[0];
-    if (!entity || !entity.architecture) {
-      return { success: false, errors: [{ message: 'Nije parsiran entity/architecture' }], signals: [], timeline: [] };
+    const entity = allEntities[allEntities.length - 1];
+    if (!entity.architecture) {
+      return { success: false, errors: [{ message: 'Nije parsirana architecture' }], signals: [], timeline: [] };
     }
+
+    // Build component registry: built-ins + entities parsed from code (except top-level)
+    const registry = { ...builtinComponents };
+    allEntities.slice(0, -1).forEach(e => { registry[e.name] = e; });
+
+    // Flatten component instances into concurrent statements
+    const { statements: flatStmts, extraSignals } = flattenInstances(entity, registry);
+    entity.architecture.statements = flatStmts;
+    entity.architecture.signals = [...entity.architecture.signals, ...extraSignals];
 
     // Build initial state
     const state = {};
@@ -704,10 +743,7 @@ const VHDLInterpreter = (() => {
     const stimuli = [];
 
     // Build mapping: testbench signal name → entity port name
-    // Handles both direct matches (a <= '1') and port-mapped signals (a => a_s, then a_s <= '1')
     const portMap = {};
-
-    // Parse port map to find which tb signals drive which entity ports
     const portMapRe = /(\w+)\s*=>\s*(\w+)/gi;
     let pm;
     while ((pm = portMapRe.exec(code)) !== null) {
@@ -716,28 +752,35 @@ const VHDLInterpreter = (() => {
       const port = entity.ports.find(p => p.name === portName && p.direction === 'in');
       if (port) portMap[tbSig] = portName;
     }
-
-    // Also accept port names directly
     entity.ports.filter(p => p.direction === 'in').forEach(p => {
       if (!portMap[p.name]) portMap[p.name] = p.name;
     });
 
     let currentTime = 0;
-    const lines = code.split('\n');
 
-    lines.forEach(line => {
-      const waitM = line.match(/wait\s+for\s+(\d+)\s*ns/i);
+    // Split by semicolons so multiple statements on one line are all processed
+    const stmts = code.split(';');
+    stmts.forEach(stmt => {
+      stmt = stmt.trim();
+      if (!stmt) return;
+
+      // Handle "wait for N ns" (also "wait for N ns -- comment")
+      const waitM = stmt.match(/\bwait\s+for\s+(\d+)\s*(ns|ps|us)\b/i);
       if (waitM) {
-        currentTime += parseInt(waitM[1]);
+        const val = parseInt(waitM[1]);
+        const unit = waitM[2].toLowerCase();
+        currentTime += unit === 'ps' ? val / 1000 : unit === 'us' ? val * 1000 : val;
         return;
       }
 
-      const assignM = line.match(/(\w+)\s*<=\s*'?([01xzXZ])'?/);
-      if (assignM) {
-        const sigName = assignM[1].toLowerCase();
+      // Find ALL signal assignments in this statement
+      const assignRe = /\b(\w+)\s*<=\s*'([01xzXZ])'/gi;
+      let am;
+      while ((am = assignRe.exec(stmt)) !== null) {
+        const sigName = am[1].toLowerCase();
         const portName = portMap[sigName];
         if (portName) {
-          stimuli.push({ time: currentTime, signal: portName, value: assignM[2] });
+          stimuli.push({ time: currentTime, signal: portName, value: am[2] });
         }
       }
     });
@@ -807,6 +850,144 @@ const VHDLInterpreter = (() => {
     }
 
     return stimuli;
+  }
+
+  // =================== STRUCTURAL / COMPONENT SUPPORT ===================
+
+  // Substitute signal/port names in a statement using a name map
+  function substituteNames(stmt, nameMap) {
+    const sub = n => (nameMap[n] !== undefined ? nameMap[n] : n);
+    const subExpr = e => e.replace(/\b([a-z_]\w*)\b/g, (_, w) => sub(w));
+
+    if (stmt.type === 'concurrent_assign') {
+      return { ...stmt, target: sub(stmt.target), expr: subExpr(stmt.expr) };
+    }
+    if (stmt.type === 'conditional_assign') {
+      return {
+        ...stmt,
+        target: sub(stmt.target),
+        alternatives: stmt.alternatives.map(alt => ({
+          value: subExpr(alt.value),
+          condition: alt.condition ? subExpr(alt.condition) : null
+        }))
+      };
+    }
+    if (stmt.type === 'process') {
+      return {
+        ...stmt,
+        sensitivity: stmt.sensitivity.map(sub),
+        statements: stmt.statements.map(s => substituteNames(s, nameMap))
+      };
+    }
+    if (stmt.type === 'assign') {
+      return { ...stmt, target: sub(stmt.target), expr: subExpr(stmt.expr) };
+    }
+    if (stmt.type === 'if') {
+      return {
+        ...stmt,
+        condition: subExpr(stmt.condition),
+        thenStmts: stmt.thenStmts.map(s => substituteNames(s, nameMap)),
+        elseStmts: stmt.elseStmts.map(s => substituteNames(s, nameMap))
+      };
+    }
+    return stmt;
+  }
+
+  // Expand component instances into flat concurrent statements
+  function flattenInstances(entity, registry) {
+    const extraSignals = [];
+    const flatStatements = [];
+
+    entity.architecture.statements.forEach(stmt => {
+      if (stmt.type !== 'component_instance') {
+        flatStatements.push(stmt);
+        return;
+      }
+      const { label, compName, portMap } = stmt;
+      const compEntity = registry[compName];
+      if (!compEntity || !compEntity.architecture) {
+        console.warn('Komponenta nije pronađena u registru:', compName);
+        return;
+      }
+      // Build substitution: component port/signal name → parent signal name
+      const nameMap = {};
+      compEntity.ports.forEach(port => {
+        const mapped = portMap[port.name];
+        if (mapped) nameMap[port.name] = mapped;
+      });
+      compEntity.architecture.signals.forEach(sig => {
+        const instName = `${label}_${sig.name}`;
+        nameMap[sig.name] = instName;
+        extraSignals.push({ name: instName, type: sig.type, width: sig.width });
+      });
+      // Flatten component statements with substituted names (one level deep)
+      compEntity.architecture.statements.forEach(compStmt => {
+        if (compStmt.type !== 'component_instance') {
+          flatStatements.push(substituteNames(compStmt, nameMap));
+        }
+      });
+    });
+
+    return { statements: flatStatements, extraSignals };
+  }
+
+  // Parse all entity/architecture pairs from a single code block
+  function parseMultiple(code) {
+    const entities = [];
+    const entityRe = /\bentity\s+\w+\s+is\b/gi;
+    const positions = [];
+    let em;
+    while ((em = entityRe.exec(code)) !== null) positions.push(em.index);
+    if (positions.length === 0) return entities;
+    for (let i = 0; i < positions.length; i++) {
+      const section = code.slice(positions[i], i + 1 < positions.length ? positions[i + 1] : code.length);
+      const r = parse(section);
+      if (r.entities[0]) entities.push(r.entities[0]);
+    }
+    return entities;
+  }
+
+  // Built-in component registry (decoder_2to4 and common gates pre-loaded)
+  const builtinComponents = {};
+  let builtinsReady = false;
+
+  function ensureBuiltins() {
+    if (builtinsReady) return;
+    builtinsReady = true;
+    const defs = [
+      `entity decoder_2to4 is
+  port (en:in std_logic; s1:in std_logic; s0:in std_logic;
+        y0:out std_logic; y1:out std_logic; y2:out std_logic; y3:out std_logic);
+end entity decoder_2to4;
+architecture rtl of decoder_2to4 is begin
+  y0 <= en and (not s1) and (not s0) after 5 ns;
+  y1 <= en and (not s1) and      s0  after 5 ns;
+  y2 <= en and      s1  and (not s0) after 5 ns;
+  y3 <= en and      s1  and      s0  after 5 ns;
+end architecture rtl;`,
+      `entity and_gate is
+  port (a:in std_logic; b:in std_logic; y:out std_logic);
+end entity and_gate;
+architecture rtl of and_gate is begin
+  y <= a and b after 5 ns;
+end architecture rtl;`,
+      `entity or_gate is
+  port (a:in std_logic; b:in std_logic; y:out std_logic);
+end entity or_gate;
+architecture rtl of or_gate is begin
+  y <= a or b after 5 ns;
+end architecture rtl;`,
+      `entity not_gate is
+  port (a:in std_logic; y:out std_logic);
+end entity not_gate;
+architecture rtl of not_gate is begin
+  y <= not a after 5 ns;
+end architecture rtl;`
+    ];
+    defs.forEach(def => {
+      const r = parse(def);
+      if (r.entities[0]) builtinComponents[r.entities[0].name] = r.entities[0];
+    });
   }
 
   // =================== TESTBENCH GENERATOR ===================
