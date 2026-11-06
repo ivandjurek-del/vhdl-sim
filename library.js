@@ -445,6 +445,134 @@ begin
 end architecture sim;`
     },
     {
+      name: 'decoder_tree_4to16',
+      desc: 'Dekodirsko stablo 4:16 (2 razine dekodera 2:4)',
+      category: 'Dekoderi',
+      ports: 'en, a3, a2, a1, a0 : IN std_logic; y0..y15 : OUT std_logic',
+      code: `library ieee;
+use ieee.std_logic_1164.all;
+
+entity decoder_tree_4to16 is
+  port (
+    en      : in  std_logic;
+    a3, a2  : in  std_logic;
+    a1, a0  : in  std_logic;
+    y0,  y1,  y2,  y3  : out std_logic;
+    y4,  y5,  y6,  y7  : out std_logic;
+    y8,  y9,  y10, y11 : out std_logic;
+    y12, y13, y14, y15 : out std_logic
+  );
+end entity decoder_tree_4to16;
+
+architecture structural of decoder_tree_4to16 is
+
+  component decoder_2to4 is
+    port (
+      en : in  std_logic;
+      s1 : in  std_logic;
+      s0 : in  std_logic;
+      y0 : out std_logic;
+      y1 : out std_logic;
+      y2 : out std_logic;
+      y3 : out std_logic
+    );
+  end component decoder_2to4;
+
+  signal d1_0, d1_1, d1_2, d1_3 : std_logic;
+
+begin
+
+  -- Razina 1: dekodira a3, a2
+  L1 : decoder_2to4
+    port map (en => en, s1 => a3, s0 => a2,
+              y0 => d1_0, y1 => d1_1, y2 => d1_2, y3 => d1_3);
+
+  -- Razina 2: dekodira a1, a0
+  L2_0 : decoder_2to4
+    port map (en => d1_0, s1 => a1, s0 => a0,
+              y0 => y0, y1 => y1, y2 => y2, y3 => y3);
+
+  L2_1 : decoder_2to4
+    port map (en => d1_1, s1 => a1, s0 => a0,
+              y0 => y4, y1 => y5, y2 => y6, y3 => y7);
+
+  L2_2 : decoder_2to4
+    port map (en => d1_2, s1 => a1, s0 => a0,
+              y0 => y8, y1 => y9, y2 => y10, y3 => y11);
+
+  L2_3 : decoder_2to4
+    port map (en => d1_3, s1 => a1, s0 => a0,
+              y0 => y12, y1 => y13, y2 => y14, y3 => y15);
+
+end architecture structural;`,
+      testbench: `library ieee;
+use ieee.std_logic_1164.all;
+
+entity decoder_tree_4to16_tb is
+end entity decoder_tree_4to16_tb;
+
+architecture sim of decoder_tree_4to16_tb is
+  signal en             : std_logic := '0';
+  signal a3, a2, a1, a0 : std_logic := '0';
+  signal y0,  y3,  y5  : std_logic;
+  signal y8,  y11, y15 : std_logic;
+begin
+  uut : entity work.decoder_tree_4to16
+    port map (
+      en => en, a3 => a3, a2 => a2, a1 => a1, a0 => a0,
+      y0  => y0,  y1  => open, y2  => open, y3  => y3,
+      y4  => open, y5  => y5,  y6  => open, y7  => open,
+      y8  => y8,  y9  => open, y10 => open, y11 => y11,
+      y12 => open, y13 => open, y14 => open, y15 => y15
+    );
+
+  stim : process
+  begin
+    en <= '1';
+    -- Adresa 0 (0000) -> y0 = 1
+    a3 <= '0';
+    a2 <= '0';
+    a1 <= '0';
+    a0 <= '0';
+    wait for 40 ns;
+    -- Adresa 3 (0011) -> y3 = 1
+    a3 <= '0';
+    a2 <= '0';
+    a1 <= '1';
+    a0 <= '1';
+    wait for 40 ns;
+    -- Adresa 5 (0101) -> y5 = 1
+    a3 <= '0';
+    a2 <= '1';
+    a1 <= '0';
+    a0 <= '1';
+    wait for 40 ns;
+    -- Adresa 8 (1000) -> y8 = 1
+    a3 <= '1';
+    a2 <= '0';
+    a1 <= '0';
+    a0 <= '0';
+    wait for 40 ns;
+    -- Adresa 11 (1011) -> y11 = 1
+    a3 <= '1';
+    a2 <= '0';
+    a1 <= '1';
+    a0 <= '1';
+    wait for 40 ns;
+    -- Adresa 15 (1111) -> y15 = 1
+    a3 <= '1';
+    a2 <= '1';
+    a1 <= '1';
+    a0 <= '1';
+    wait for 40 ns;
+    -- en = 0 -> svi izlazi = 0
+    en <= '0';
+    wait for 40 ns;
+    wait;
+  end process;
+end architecture sim;`
+    },
+    {
       name: 'hazard_static0',
       desc: 'Statički hazard-0: f = A · Ā = 0 (impuls pri A: 0→1)',
       category: 'Hazardi',
@@ -688,6 +816,10 @@ end architecture rtl;`,
     mux_2to1: {
       vhdl: BUILTIN_COMPONENTS.find(c => c.name === 'mux_2to1').code,
       testbench: ''
+    },
+    decoder_tree_4to16: {
+      vhdl: BUILTIN_COMPONENTS.find(c => c.name === 'decoder_tree_4to16').code,
+      testbench: BUILTIN_COMPONENTS.find(c => c.name === 'decoder_tree_4to16').testbench
     },
     hazard_static0: {
       vhdl: BUILTIN_COMPONENTS.find(c => c.name === 'hazard_static0').code,
